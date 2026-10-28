@@ -1,6 +1,6 @@
 # 🛡️ typosquat-guard
 
-[![CI](https://github.com/sxxsalihxxs/new/actions/workflows/ci.yml/badge.svg)](https://github.com/sxxsalihxxs/new/actions/workflows/ci.yml)
+[![CI](https://github.com/sxxsalihxxs/pypi-typosquat-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/sxxsalihxxs/pypi-typosquat-guard/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -39,7 +39,7 @@ A one-character difference is easy to miss in code review. It is easy for a mach
 ## Quick start
 
 ```bash
-pip install git+https://github.com/sxxsalihxxs/new.git
+pip install git+https://github.com/sxxsalihxxs/pypi-typosquat-guard.git
 typosquat-guard requirements.txt
 ```
 
@@ -71,7 +71,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: sxxsalihxxs/new@main
+      - uses: sxxsalihxxs/pypi-typosquat-guard@main
         with:
           files: requirements.txt requirements-dev.txt
           fail-on: high          # high | medium | low | never
@@ -162,7 +162,7 @@ print(finding.similar_to, finding.risk)  # requests HIGH
 ## Development
 
 ```bash
-git clone https://github.com/sxxsalihxxs/new.git typosquat-guard
+git clone https://github.com/sxxsalihxxs/pypi-typosquat-guard.git typosquat-guard
 cd typosquat-guard
 pip install -e ".[dev]"
 pytest

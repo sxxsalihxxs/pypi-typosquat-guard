@@ -26,8 +26,8 @@ dependencies = []
 dev = ["pytest>=7", "ruff>=0.4"]
 
 [project.urls]
-Homepage = "https://github.com/sxxsalihxxs/new"
-Issues = "https://github.com/sxxsalihxxs/new/issues"
+Homepage = "https://github.com/sxxsalihxxs/pypi-typosquat-guard"
+Issues = "https://github.com/sxxsalihxxs/pypi-typosquat-guard/issues"
 
 [project.scripts]
 typosquat-guard = "typosquat_guard.cli:main"
