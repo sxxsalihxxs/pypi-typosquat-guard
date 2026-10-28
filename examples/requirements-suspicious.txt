@@ -1,0 +1,8 @@
+requests==2.31.0
+reqeusts==2.0.0
+flask>=3.0
+numpi
+djang0
+beautifulsoup4
+python-dateutil
+python-requests

@@ -1,7 +1,10 @@
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+.ruff_cache/
 report.md
+typosquat-report.*
 *.egg-info/
 dist/
 build/

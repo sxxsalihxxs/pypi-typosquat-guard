@@ -1,0 +1,98 @@
+name: Typosquat Guard
+description: Flag typosquatted / look-alike Python packages in requirements files and report them on the PR.
+branding:
+  icon: shield
+  color: red
+
+inputs:
+  files:
+    description: Space-separated requirements files to scan.
+    default: requirements.txt
+  allowlist:
+    description: Optional extra allowlist file, merged with the built-in one.
+    default: ""
+  fail-on:
+    description: Fail the job on findings at or above this risk (high, medium, low, never).
+    default: high
+  comment:
+    description: Post (or update) a report comment on the pull request.
+    default: "true"
+  github-token:
+    description: Token used to comment on the PR.
+    default: ${{ github.token }}
+
+outputs:
+  findings:
+    description: Number of suspicious packages found.
+    value: ${{ steps.scan.outputs.findings }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install typosquat-guard
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+        ALLOWLIST: ${{ inputs.allowlist }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        args=()
+        for f in $FILES; do
+          if [ -f "$f" ]; then args+=("$f"); else echo "::warning::$f not found, skipping"; fi
+        done
+        if [ ${#args[@]} -eq 0 ]; then
+          echo "findings=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        [ -n "$ALLOWLIST" ] && args+=(--allowlist "$ALLOWLIST")
+
+        typosquat-guard "${args[@]}" --format markdown --out typosquat-report.md --fail-on never
+        typosquat-guard "${args[@]}" --format json --out typosquat-report.json --fail-on never
+        cat typosquat-report.md >> "$GITHUB_STEP_SUMMARY"
+        echo "findings=$(python -c 'import json;print(len(json.load(open("typosquat-report.json"))["findings"]))')" >> "$GITHUB_OUTPUT"
+        echo "report=true" >> "$GITHUB_OUTPUT"
+
+    - name: Comment on PR
+      if: inputs.comment == 'true' && github.event_name == 'pull_request' && steps.scan.outputs.report == 'true'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require("fs");
+          const body = fs.readFileSync("typosquat-report.md", "utf8");
+          const marker = "<!-- typosquat-guard-report -->";
+          const { owner, repo } = context.repo;
+          const issue_number = context.issue.number;
+          const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number });
+          const existing = comments.find(c => c.body && c.body.includes(marker));
+          try {
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+          } catch (e) {
+            core.warning(`Could not comment on PR (forks have a read-only token): ${e.message}`);
+          }
+
+    - name: Enforce policy
+      if: steps.scan.outputs.report == 'true'
+      shell: bash
+      env:
+        FILES: ${{ inputs.files }}
+        ALLOWLIST: ${{ inputs.allowlist }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        args=()
+        for f in $FILES; do [ -f "$f" ] && args+=("$f"); done
+        [ -n "$ALLOWLIST" ] && args+=(--allowlist "$ALLOWLIST")
+        typosquat-guard "${args[@]}" --fail-on "$FAIL_ON"

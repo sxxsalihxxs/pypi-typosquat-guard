@@ -4,9 +4,12 @@ import urllib.request
 
 
 def send_slack_alert(text: str) -> None:
+    """Post `text` to the Slack incoming webhook in $SLACK_WEBHOOK_URL."""
     webhook = os.getenv("SLACK_WEBHOOK_URL")
     if not webhook:
         raise RuntimeError("SLACK_WEBHOOK_URL env var is not set")
+    if not webhook.startswith("https://"):
+        raise RuntimeError("SLACK_WEBHOOK_URL must be an https:// URL")
 
     payload = {"text": text}
 

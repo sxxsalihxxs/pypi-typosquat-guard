@@ -1,172 +1,191 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Iterable, List, Optional, Tuple
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from importlib import resources
+from pathlib import Path
 
+# A requirement line starts with a distribution name (PEP 508).
+NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 
-NAME_RE = re.compile(r"^\s*([A-Za-z0-9_.-]+)")
+# Characters attackers commonly swap for look-alikes.
+HOMOGLYPHS = str.maketrans({"0": "o", "1": "l", "3": "e", "5": "s", "7": "t", "!": "i", "|": "l"})
+
+# Affixes that turn a real name into a plausible-looking fake (e.g. `python-requests`).
+SQUAT_PREFIXES = ("python-", "py-")
+SQUAT_SUFFIXES = ("-python", "-py", "-lib", "-dev", "-official")
+
+RISK_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3}
 
 
 def normalize_name(name: str) -> str:
-    n = name.strip().lower()
-    n = n.replace("_", "-")
-    return n
+    """Normalize a package name as PyPI does (PEP 503)."""
+    return re.sub(r"[-_.]+", "-", name.strip()).lower()
 
 
-def parse_requirements_txt(path: str) -> List[str]:
-    pkgs: List[str] = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
+@dataclass
+class Requirement:
+    name: str
+    file: str
+    line: int
+
+
+def parse_requirements_txt(path: str, _seen: set[Path] | None = None) -> list[Requirement]:
+    """Parse a requirements file, following `-r`/`--requirement` includes."""
+    seen = _seen if _seen is not None else set()
+    p = Path(path).resolve()
+    if p in seen:
+        return []
+    seen.add(p)
+
+    reqs: list[Requirement] = []
+    with open(p, encoding="utf-8") as f:
+        for lineno, line in enumerate(f, start=1):
+            s = line.split(" #", 1)[0].strip()
             if not s or s.startswith("#"):
                 continue
-            # Skip pip options/includes for MVP
-            if s.startswith(("-", "--")):
+            include = re.match(r"^(?:-r|--requirement)[\s=]+(\S+)", s)
+            if include:
+                reqs.extend(parse_requirements_txt(str(p.parent / include.group(1)), seen))
                 continue
-
+            # Other pip options (-e, -c, --index-url, ...) are out of scope.
+            if s.startswith("-"):
+                continue
             m = NAME_RE.match(s)
-            if not m:
-                continue
-            raw = m.group(1)
-            # Remove extras like pkg[foo]
-            raw = raw.split("[", 1)[0]
-            pkgs.append(normalize_name(raw))
-    # de-dup while preserving order
-    seen = set()
-    out = []
-    for p in pkgs:
-        if p not in seen:
-            seen.add(p)
-            out.append(p)
-    return out
+            if m:
+                reqs.append(Requirement(normalize_name(m.group(1)), str(path), lineno))
+    return reqs
 
 
-def levenshtein(a: str, b: str) -> int:
-    # classic DP, ok for small allowlists
+def osa_distance(a: str, b: str) -> int:
+    """Edit distance where swapping two adjacent characters counts as one edit."""
     if a == b:
         return 0
-    if not a:
-        return len(b)
-    if not b:
-        return len(a)
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, start=1):
-        cur = [i]
-        for j, cb in enumerate(b, start=1):
-            ins = cur[j - 1] + 1
-            dele = prev[j] + 1
-            sub = prev[j - 1] + (0 if ca == cb else 1)
-            cur.append(min(ins, dele, sub))
-        prev = cur
-    return prev[-1]
+    if not a or not b:
+        return len(a) or len(b)
+    d = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        d[i][0] = i
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[-1][-1]
 
 
 def distance_threshold(name: str) -> int:
-    L = len(name)
-    if L <= 6:
+    """Short names collide naturally, so allow fewer edits for them."""
+    n = len(name)
+    if n <= 4:
+        return 0
+    if n <= 8:
         return 1
-    if L <= 12:
+    if n <= 14:
         return 2
     return 3
-
-
-def find_typosquat_candidate(
-    name: str, allowlist: Iterable[str]
-) -> Optional[Tuple[str, int]]:
-    """
-    Return best candidate (closest allowlisted name, distance) if suspicious.
-    """
-    n = normalize_name(name)
-    best: Optional[Tuple[str, int]] = None
-    for good in allowlist:
-        g = normalize_name(good)
-        # cheap filters
-        if n[0:1] != g[0:1]:
-            continue
-        if abs(len(n) - len(g)) > 3:
-            continue
-        d = levenshtein(n, g)
-        if best is None or d < best[1]:
-            best = (g, d)
-
-    if best is None:
-        return None
-
-    thr = distance_threshold(n)
-    # suspicious only if close AND not exactly the same
-    if 0 < best[1] <= thr:
-        return best
-    return None
 
 
 @dataclass
 class Finding:
     package: str
+    similar_to: str
     risk: str
+    technique: str
     reason: str
-    suggestion: str
+    file: str = ""
+    line: int = 0
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
-def risk_from_distance(dist: int) -> str:
-    if dist <= 1:
-        return "HIGH"
-    if dist == 2:
-        return "MED"
-    return "LOW"
+def find_typosquat(name: str, allowlist: Iterable[str]) -> Finding | None:
+    """Return a Finding if `name` looks like a typosquat of an allowlisted package."""
+    n = normalize_name(name)
+    allow = {normalize_name(a) for a in allowlist}
+    if n in allow:
+        return None
+
+    deglyphed = n.translate(HOMOGLYPHS)
+    if deglyphed != n and deglyphed in allow:
+        return Finding(n, deglyphed, "HIGH", "homoglyph", f"look-alike characters for `{deglyphed}`")
+
+    collapsed = n.replace("-", "")
+    for good in allow:
+        if collapsed == good.replace("-", ""):
+            return Finding(n, good, "HIGH", "separator", f"same as `{good}` with different separators")
+
+    for prefix in SQUAT_PREFIXES:
+        if n.startswith(prefix) and n[len(prefix) :] in allow:
+            good = n[len(prefix) :]
+            return Finding(n, good, "MEDIUM", "affix", f"`{good}` with a `{prefix}` prefix")
+    for suffix in SQUAT_SUFFIXES:
+        if n.endswith(suffix) and n[: -len(suffix)] in allow:
+            good = n[: -len(suffix)]
+            return Finding(n, good, "MEDIUM", "affix", f"`{good}` with a `{suffix}` suffix")
+    stripped = n.rstrip("0123456789")
+    if stripped != n and stripped in allow:
+        return Finding(n, stripped, "MEDIUM", "affix", f"`{stripped}` with a numeric suffix")
+
+    threshold = distance_threshold(n)
+    if threshold == 0:
+        return None
+    best: tuple[str, int] | None = None
+    for good in sorted(allow):
+        if abs(len(n) - len(good)) > threshold:
+            continue
+        d = osa_distance(n, good)
+        if best is None or d < best[1]:
+            best = (good, d)
+    if best is None or best[1] > threshold:
+        return None
+
+    good, dist = best
+    risk = "HIGH" if dist == 1 else "MEDIUM" if dist == 2 else "LOW"
+    edits = "edit" if dist == 1 else "edits"
+    return Finding(n, good, risk, "edit-distance", f"{dist} {edits} away from `{good}`")
 
 
-def scan_requirements(req_path: str, allowlist_path: str) -> Tuple[List[str], List[Finding]]:
-    allow = []
-    with open(allowlist_path, "r", encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if s and not s.startswith("#"):
-                allow.append(normalize_name(s))
-
-    pkgs = parse_requirements_txt(req_path)
-    findings: List[Finding] = []
-    for p in pkgs:
-        cand = find_typosquat_candidate(p, allow)
-        if cand:
-            good, dist = cand
-            risk = risk_from_distance(dist)
-            findings.append(
-                Finding(
-                    package=p,
-                    risk=risk,
-                    reason=f"`{good}` ile çok benzer (edit distance={dist})",
-                    suggestion=f"`{good}` mi demek istediniz? Paketi doğrulayın / gerekirse değiştirin.",
-                )
-            )
-    return pkgs, findings
+def load_allowlist(paths: Iterable[str] = (), include_default: bool = True) -> set[str]:
+    lines: list[str] = []
+    if include_default:
+        data = resources.files("typosquat_guard").joinpath("data/allowlist.txt")
+        lines.extend(data.read_text(encoding="utf-8").splitlines())
+    for path in paths:
+        lines.extend(Path(path).read_text(encoding="utf-8").splitlines())
+    return {normalize_name(s) for s in (ln.split("#", 1)[0].strip() for ln in lines) if s}
 
 
-def render_markdown(req_path: str, pkgs: List[str], findings: List[Finding]) -> str:
-    hi = sum(1 for f in findings if f.risk == "HIGH")
-    med = sum(1 for f in findings if f.risk == "MED")
-    low = sum(1 for f in findings if f.risk == "LOW")
+def scan_files(
+    req_paths: Iterable[str], allowlist: set[str], ignore: Iterable[str] = ()
+) -> tuple[list[Requirement], list[Finding]]:
+    ignored = {normalize_name(i) for i in ignore}
+    reqs: list[Requirement] = []
+    for path in req_paths:
+        reqs.extend(parse_requirements_txt(path))
 
-    lines: List[str] = []
-    lines.append("## Typosquat / Sahte Paket Taraması\n")
-    lines.append(f"**Dosya:** `{req_path}`  \n")
-    lines.append(f"**Toplam paket:** {len(pkgs)}  \n")
-    lines.append(f"**High:** {hi} | **Med:** {med} | **Low:** {low}\n")
+    findings: list[Finding] = []
+    reported: set[str] = set()
+    for req in reqs:
+        if req.name in ignored or req.name in reported:
+            continue
+        finding = find_typosquat(req.name, allowlist)
+        if finding:
+            finding.file, finding.line = req.file, req.line
+            findings.append(finding)
+            reported.add(req.name)
+    findings.sort(key=lambda f: -RISK_ORDER[f.risk])
+    return reqs, findings
 
-    if not findings:
-        lines.append("✅ Şüpheli typosquat bulgusu yok.\n")
-        return "\n".join(lines)
 
-    lines.append("### Bulgular\n")
-    lines.append("| Paket | Risk | Neden | Öneri |")
-    lines.append("|---|---:|---|---|")
-    for f in findings:
-        lines.append(f"| `{f.package}` | **{f.risk}** | {f.reason} | {f.suggestion} |")
-
-    lines.append("\n### Detay\n")
-    for f in findings:
-        lines.append(f"#### `{f.package}` ({f.risk})")
-        lines.append(f"- Neden: {f.reason}")
-        lines.append(f"- Öneri: {f.suggestion}\n")
-
-    return "\n".join(lines)
+def scan_requirements(
+    req_path: str, allowlist_path: str | None = None
+) -> tuple[list[Requirement], list[Finding]]:
+    """Scan a single requirements file (kept for backwards compatibility)."""
+    extra = [allowlist_path] if allowlist_path else []
+    return scan_files([req_path], load_allowlist(extra))
