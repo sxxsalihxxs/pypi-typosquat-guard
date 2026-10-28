@@ -22,6 +22,8 @@ credentials or environment variables as soon as they were installed.
 
 A one-character difference is easy to miss in code review. It is easy for a machine to catch.
 
+📄 Read the [case study](docs/case-study.md) for the full story behind the project (STAR format).
+
 ## Features
 
 - **Five detection techniques**: edit distance with transpositions, homoglyphs, separator tricks, affixes and numeric suffixes (see [Detection](#detection))
